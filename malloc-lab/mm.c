@@ -64,6 +64,8 @@ team_t team = {
 #define SUC(bp) (*(void **)((char *)(bp) + WSIZE))
 #define PRED(bp) (*(void **)(bp))
 
+#define SCAN_LIMIT 32
+
 static void insert_free_block(void * bp);
 static void remove_free_block(void *bp);
 static void *extend_heap(size_t words);
@@ -135,21 +137,29 @@ static void *coalesce(void *bp) {
     return bp;
 }
 
-static void *find_fit(size_t asize) // first fit 구현
-{
+static void *find_fit(size_t asize) {
     void *cur = free_listp;
-    while (cur != NULL)
-    {
+    void *best = NULL;
+    size_t min_diff = (size_t)-1;      // unsigned long 기준 가장 큰 값
+    int count = 0;
+    while (cur != NULL && count < SCAN_LIMIT) {
         size_t cur_size = GET_SIZE(HDRP(cur));
-        if (cur_size < asize)
-        {
-            cur = SUC(cur);
-            continue;
+        if (cur_size >= asize) {
+            size_t diff = cur_size - asize;
+            if (diff < min_diff) {
+                best = cur;
+                min_diff = diff;
+                if (diff == 0) {
+                    break;
+                }
+            }
         }
-        return cur;
+        cur = SUC(cur);
+        count++;
     }
-    return NULL;
+    return best;
 }
+
 
 static void place(void *bp, size_t asize) {
     size_t csize = GET_SIZE(HDRP(bp));
