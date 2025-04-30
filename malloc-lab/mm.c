@@ -64,9 +64,8 @@ team_t team = {
 #define SUC(bp) (*(void **)((char *)(bp) + WSIZE))
 #define PRED(bp) (*(void **)(bp))
 
-#define LISTLIMIT 20
+#define SCAN_LIMIT 32
 
-static int get_list_index(size_t size);
 static void insert_free_block(void * bp);
 static void remove_free_block(void *bp);
 static void *extend_heap(size_t words);
@@ -74,7 +73,7 @@ static void *coalesce(void *bp);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
 static void *heap_listp;
-void *segregated_free_lists[LISTLIMIT];
+static void *free_listp = NULL;
 
 static void *extend_heap(size_t words) {
     char *bp;
@@ -138,23 +137,29 @@ static void *coalesce(void *bp) {
     return bp;
 }
 
-static void *find_fit(size_t asize) // first fit 구현
-{
-    int idx = get_list_index(asize);
-
-    for (int i = idx; i < LISTLIMIT; i++) {
-        void *bp = segregated_free_lists[i];
-        while (bp != NULL)
-        {
-            size_t cur_size = GET_SIZE(HDRP(bp));
-            if (cur_size >= asize) {
-                return bp;
+static void *find_fit(size_t asize) {
+    void *cur = free_listp;
+    void *best = NULL;
+    size_t min_diff = (size_t)-1;      // unsigned long 기준 가장 큰 값
+    int count = 0;
+    while (cur != NULL && count < SCAN_LIMIT) {
+        size_t cur_size = GET_SIZE(HDRP(cur));
+        if (cur_size >= asize) {
+            size_t diff = cur_size - asize;
+            if (diff < min_diff) {
+                best = cur;
+                min_diff = diff;
+                if (diff == 0) {
+                    break;
+                }
             }
-            bp = SUC(bp);
         }
+        cur = SUC(cur);
+        count++;
     }
-    return NULL;
+    return best;
 }
+
 
 static void place(void *bp, size_t asize) {
     size_t csize = GET_SIZE(HDRP(bp));
@@ -164,6 +169,7 @@ static void place(void *bp, size_t asize) {
     if (csize - asize >= 2 * DSIZE) {
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
+        remove_free_block(bp);
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize - asize, 0));
         PUT(FTRP(bp), PACK(csize - asize, 0));
@@ -171,6 +177,7 @@ static void place(void *bp, size_t asize) {
     } else {
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
+        remove_free_block(bp);
     }
 }
 
@@ -179,21 +186,20 @@ static void place(void *bp, size_t asize) {
 */
 int mm_init(void)
 {
-    // ** 중요 ** segregated_free_lists 초기화 안하면 segfault 발생!
-    for (int i = 0; i < LISTLIMIT; i++) {
-        segregated_free_lists[i] = NULL;
-    }
-
     // 8Word의 초기 힙을 만들고, PADDING, PROLOGUE_HEADER, PROLOGUE_FOOTER, EPILOGUE_HEADER 할당
     // 4Word에는 최소 크기(32B = 4Words) dummy free block을 만들어 배치
-    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) {
+    if ((heap_listp = mem_sbrk(8*WSIZE)) == (void *)-1) {
         return -1;
     }
     PUT(heap_listp, 0);
     PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1));
     PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));
-    PUT(heap_listp + (3*WSIZE), PACK(0, 1));
-    heap_listp += (2*WSIZE);
+    PUT(heap_listp + (3*WSIZE), PACK(2*DSIZE, 0));
+    PUT(heap_listp + (4*WSIZE), NULL);
+    PUT(heap_listp + (5*WSIZE), NULL);
+    PUT(heap_listp + (6*WSIZE), PACK(2*DSIZE, 0));
+    PUT(heap_listp + (7*WSIZE), PACK(0, 1));
+    heap_listp += (4*WSIZE);
 
     // 최초 Free Block 공간을 위한 힙 확장
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL) {
@@ -313,44 +319,26 @@ void *mm_realloc(void *ptr, size_t size)
 }
 
 static void insert_free_block(void * bp) {
-    size_t size = GET_SIZE(HDRP(bp));
-    int idx = get_list_index(size);
-    void *headPtr = segregated_free_lists[idx];
-
-    SUC(bp) = headPtr;
+    SUC(bp) = free_listp;
     PRED(bp) = NULL;
 
-    if (headPtr) {
-        PRED(headPtr) = bp;
+    if (free_listp != NULL) {
+        PRED(free_listp) = bp;
     }
-    
-    segregated_free_lists[idx] = bp;
+    free_listp = bp;
 }
 
 static void remove_free_block(void *bp) {
     void *pred = PRED(bp);
     void *succ = SUC(bp);
 
-    if (pred) {
+    if (pred != NULL) {
         SUC(pred) = succ;
     } else {
-        size_t size = GET_SIZE(HDRP(bp));
-        int idx = get_list_index(size);
-        segregated_free_lists[idx] = succ;
+        free_listp = succ;
     }
 
-    if (succ) {
+    if (succ != NULL) {
         PRED(succ) = pred;
     }
-}
-
-
-static int get_list_index(size_t size) {
-    int idx = 0;
-    size_t temp = size;
-    while (idx < LISTLIMIT - 1 && temp > 1) {
-        temp >>= 1;
-        idx++;
-    }
-    return idx;
 }
